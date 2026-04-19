@@ -4,15 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:client": "vite",
-    "dev:server": "tsx watch server/index.ts",
+    "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview",
-    "start": "tsx server/index.ts"
+    "preview": "vite preview"
   },
   "dependencies": {
+    "@netlify/functions": "^5.2.0",
+    "@netlify/vite-plugin": "^2.11.5",
     "cheerio": "^1.2.0",
     "date-fns": "^4.1.0",
     "express": "^5.2.1",
