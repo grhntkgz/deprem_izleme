@@ -4,7 +4,7 @@ import { answerChat, fetchEarthquakes, getAfadUrl } from './_lib/afad.mts'
 
 export default async (req: Request) => {
   try {
-    const body = (await req.json()) as { message?: string }
+    const body = (await req.json()) as { message?: string; selectedEarthquakeId?: string }
     const message = typeof body.message === 'string' ? body.message.trim() : ''
 
     if (!message) {
@@ -12,7 +12,10 @@ export default async (req: Request) => {
     }
 
     const earthquakes = await fetchEarthquakes()
-    const answer = answerChat(message, earthquakes)
+    const answer = answerChat(message, earthquakes, {
+      selectedEarthquakeId:
+        typeof body.selectedEarthquakeId === 'string' ? body.selectedEarthquakeId : undefined,
+    })
 
     return Response.json({
       answer,

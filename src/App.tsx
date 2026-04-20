@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
 
 import './App.css'
-import type { Earthquake, EarthquakeResponse } from './types'
+import type { Earthquake, EarthquakeResponse, EarthquakeStats } from './types'
 
 const refreshIntervalMs = 60_000
+const latestPulseThresholdMs = 6 * 60 * 60 * 1000
 const TURKEY_CENTER: [number, number] = [39.05, 35.2]
 const TURKEY_BOUNDS: L.LatLngBoundsExpression = [
   [34.6, 24.2],
@@ -47,6 +48,103 @@ function getMagnitudeRadius(magnitude: number) {
   return Math.max(5, magnitude * 4)
 }
 
+function extractProvince(place: string) {
+  const match = place.match(/\(([^)]+)\)\s*$/)
+  if (match?.[1]) {
+    return match[1].trim()
+  }
+
+  return (
+    place
+      .split('-')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .at(-1) ?? place
+  )
+}
+
+function calculateDisplayStats(
+  earthquakes: Earthquake[],
+  referenceTimeMs: number,
+): EarthquakeStats {
+  const total = earthquakes.length
+  const highestMagnitude = earthquakes.reduce((max, earthquake) => Math.max(max, earthquake.magnitude), 0)
+  const averageDepth =
+    earthquakes.reduce((sum, earthquake) => sum + earthquake.depthKm, 0) / Math.max(total, 1)
+  const averageMagnitude =
+    earthquakes.reduce((sum, earthquake) => sum + earthquake.magnitude, 0) / Math.max(total, 1)
+  const shallowestDepth = earthquakes.reduce(
+    (min, earthquake) => Math.min(min, earthquake.depthKm),
+    Number.POSITIVE_INFINITY,
+  )
+  const deepestDepth = earthquakes.reduce((max, earthquake) => Math.max(max, earthquake.depthKm), 0)
+
+  const windows = [
+    { label: '1s', minutes: 60 },
+    { label: '6s', minutes: 6 * 60 },
+    { label: '24s', minutes: 24 * 60 },
+  ].map((window) => ({
+    label: window.label,
+    count: earthquakes.filter(
+      (earthquake) => earthquake.timeMs >= referenceTimeMs - window.minutes * 60 * 1000,
+    ).length,
+  }))
+
+  const provinceMap = new Map<string, { count: number; strongestMagnitude: number }>()
+  earthquakes.forEach((earthquake) => {
+    const province = extractProvince(earthquake.place)
+    const current = provinceMap.get(province) ?? { count: 0, strongestMagnitude: 0 }
+    current.count += 1
+    current.strongestMagnitude = Math.max(current.strongestMagnitude, earthquake.magnitude)
+    provinceMap.set(province, current)
+  })
+
+  const topProvinces = [...provinceMap.entries()]
+    .sort((left, right) => right[1].count - left[1].count)
+    .slice(0, 5)
+    .map(([name, value]) => ({
+      name,
+      count: value.count,
+      strongestMagnitude: value.strongestMagnitude,
+    }))
+
+  const timeline = Array.from({ length: 6 }, (_, index) => {
+    const endMs = referenceTimeMs - index * 4 * 60 * 60 * 1000
+    const startMs = endMs - 4 * 60 * 60 * 1000
+    const labelDate = new Date(startMs)
+
+    return {
+      label: `${labelDate.getHours().toString().padStart(2, '0')}:00`,
+      count: earthquakes.filter(
+        (earthquake) => earthquake.timeMs >= startMs && earthquake.timeMs < endMs,
+      ).length,
+    }
+  }).reverse()
+
+  const highlights = [...earthquakes]
+    .sort((left, right) => right.magnitude - left.magnitude)
+    .slice(0, 4)
+    .map((earthquake) => ({
+      id: earthquake.id,
+      place: earthquake.place,
+      magnitude: earthquake.magnitude,
+      timeMs: earthquake.timeMs,
+    }))
+
+  return {
+    total,
+    highestMagnitude,
+    averageDepth,
+    averageMagnitude,
+    shallowestDepth: Number.isFinite(shallowestDepth) ? shallowestDepth : 0,
+    deepestDepth,
+    windows,
+    topProvinces,
+    timeline,
+    highlights,
+  }
+}
+
 function EarthquakeMap({
   earthquakes,
   latestEarthquakeId,
@@ -57,6 +155,15 @@ function EarthquakeMap({
   const mapElementRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markersRef = useRef<L.LayerGroup | null>(null)
+
+  function fitTurkeyBounds(map: L.Map) {
+    const containerWidth = map.getContainer().clientWidth
+    const padding: L.PointTuple = containerWidth < 640 ? [8, 8] : [12, 12]
+
+    map.fitBounds(TURKEY_BOUNDS, {
+      padding,
+    })
+  }
 
   useEffect(() => {
     if (!mapElementRef.current || mapRef.current) return
@@ -81,9 +188,7 @@ function EarthquakeMap({
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png').addTo(map)
 
-    map.fitBounds(TURKEY_BOUNDS, {
-      padding: [12, 12],
-    })
+    fitTurkeyBounds(map)
 
     markersRef.current = L.layerGroup().addTo(map)
     mapRef.current = map
@@ -98,7 +203,11 @@ function EarthquakeMap({
     if (!mapRef.current) return
 
     const resizeMap = () => {
-      mapRef.current?.invalidateSize()
+      const map = mapRef.current
+      if (!map) return
+
+      map.invalidateSize()
+      fitTurkeyBounds(map)
     }
 
     const observer = mapElementRef.current
@@ -194,6 +303,7 @@ function App() {
   ])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
+  const [selectedEarthquakeId, setSelectedEarthquakeId] = useState<string | null>(null)
 
   const earthquakes = useMemo(() => data?.earthquakes ?? [], [data])
 
@@ -240,25 +350,37 @@ function App() {
   )
 
   const feed = useMemo(() => filteredEarthquakes.slice(0, 12), [filteredEarthquakes])
-
-  const stats = useMemo(() => {
-    const highestMagnitude = filteredEarthquakes.reduce(
-      (max, earthquake) => Math.max(max, earthquake.magnitude),
-      0,
-    )
-
-    const averageDepth =
-      filteredEarthquakes.reduce((sum, earthquake) => sum + earthquake.depthKm, 0) /
-      Math.max(filteredEarthquakes.length, 1)
-
-    return {
-      total: filteredEarthquakes.length,
-      highestMagnitude,
-      averageDepth,
+  const effectiveSelectedEarthquakeId = useMemo(() => {
+    if (filteredEarthquakes.length === 0) {
+      return null
     }
-  }, [filteredEarthquakes])
+
+    if (selectedEarthquakeId && filteredEarthquakes.some((earthquake) => earthquake.id === selectedEarthquakeId)) {
+      return selectedEarthquakeId
+    }
+
+    return filteredEarthquakes[0].id
+  }, [filteredEarthquakes, selectedEarthquakeId])
+  const selectedEarthquake = useMemo(
+    () => filteredEarthquakes.find((earthquake) => earthquake.id === effectiveSelectedEarthquakeId) ?? null,
+    [filteredEarthquakes, effectiveSelectedEarthquakeId],
+  )
 
   const latestEarthquakeId = filteredEarthquakes[0]?.id
+  const latestEarthquake = filteredEarthquakes[0] ?? null
+  const referenceTimeMs = data?.fetchedAtMs ?? 0
+  const isDataStale =
+    latestEarthquake && referenceTimeMs
+      ? referenceTimeMs - latestEarthquake.timeMs > latestPulseThresholdMs
+      : false
+  const pulsingEarthquakeId = isDataStale ? undefined : latestEarthquakeId
+  const statsReferenceTimeMs = referenceTimeMs || latestEarthquake?.timeMs || 0
+  const displayStats = useMemo(
+    () => calculateDisplayStats(filteredEarthquakes, statsReferenceTimeMs),
+    [filteredEarthquakes, statsReferenceTimeMs],
+  )
+  const topProvinceMax = Math.max(...displayStats.topProvinces.map((province) => province.count), 1)
+  const timelineMax = Math.max(...displayStats.timeline.map((entry) => entry.count), 1)
 
   async function handleChatSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -284,7 +406,10 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify({
+          message: trimmed,
+          selectedEarthquakeId: effectiveSelectedEarthquakeId ?? undefined,
+        }),
       })
 
       if (!response.ok) {
@@ -338,6 +463,11 @@ function App() {
 
       {error ? <div className="status-banner error">{error}</div> : null}
       {loading ? <div className="status-banner">AFAD verisi yukleniyor...</div> : null}
+      {!loading && !error && isDataStale && latestEarthquake ? (
+        <div className="status-banner warning">
+          AFAD kaynagi su anda guncel gorunmuyor. Son kayit {formatDate(latestEarthquake.timeMs)} zamanina ait.
+        </div>
+      ) : null}
 
       <main className="tracker-layout">
         <aside className="sidebar">
@@ -345,7 +475,12 @@ function App() {
             <h2>Son Depremler</h2>
             <div className="feed-list">
               {feed.map((earthquake) => (
-                <article className="feed-item" key={earthquake.id}>
+                <button
+                  className={`feed-item${earthquake.id === effectiveSelectedEarthquakeId ? ' feed-item-active' : ''}`}
+                  key={earthquake.id}
+                  type="button"
+                  onClick={() => setSelectedEarthquakeId(earthquake.id)}
+                >
                   <div className="feed-item-head">
                     <span
                       className="feed-badge"
@@ -360,25 +495,107 @@ function App() {
                     <span>{minutesAgo(earthquake.timeMs)} dk once</span>
                     <span>{earthquake.depthKm.toFixed(0)} km</span>
                   </div>
-                </article>
+                </button>
               ))}
             </div>
           </section>
 
           <section className="sidebar-section">
             <h2>Deprem Istatistikleri</h2>
-            <div className="stats-card">
-              <div className="stat-row">
+            <div className="stats-hero-grid">
+              <div className="stats-hero-card">
                 <span>Toplam olay</span>
-                <strong>{stats.total}</strong>
+                <strong>{displayStats.total}</strong>
+                <small>Filtrelenmis gorunum</small>
               </div>
-              <div className="stat-row">
+              <div className="stats-hero-card">
                 <span>En buyuk</span>
-                <strong>{stats.highestMagnitude.toFixed(1)}</strong>
+                <strong>{displayStats.highestMagnitude.toFixed(1)}</strong>
+                <small>Son 100 kayit icinde</small>
               </div>
-              <div className="stat-row">
+              <div className="stats-hero-card">
                 <span>Ort. derinlik</span>
-                <strong>{stats.averageDepth.toFixed(1)} km</strong>
+                <strong>{displayStats.averageDepth.toFixed(1)} km</strong>
+                <small>Ort. buyukluk {displayStats.averageMagnitude.toFixed(1)}</small>
+              </div>
+            </div>
+            <div className="stats-card stats-card-windows">
+              <div className="stats-card-head">
+                <span>Hizli pencere</span>
+              </div>
+              <div className="window-grid">
+                {displayStats.windows.map((window) => (
+                  <div className="window-pill" key={window.label}>
+                    <strong>{window.count}</strong>
+                    <span>{window.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="stats-card">
+              <div className="stats-card-head">
+                <span>Bolgesel yogunluk</span>
+              </div>
+              <div className="province-list">
+                {displayStats.topProvinces.map((province) => (
+                  <div className="province-row" key={province.name}>
+                    <div className="province-row-top">
+                      <strong>{province.name}</strong>
+                      <span>{province.count} olay</span>
+                    </div>
+                    <div className="province-bar">
+                      <span
+                        style={{
+                          width: `${(province.count / topProvinceMax) * 100}%`,
+                          background: `linear-gradient(90deg, ${getMagnitudeColor(
+                            province.strongestMagnitude,
+                          )}, #79ffd8)`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="stats-card">
+              <div className="stats-card-head">
+                <span>Zaman akisi</span>
+                <small>4 saatlik bloklar</small>
+              </div>
+              <div className="timeline-bars">
+                {displayStats.timeline.map((entry) => (
+                  <div className="timeline-bar-item" key={entry.label}>
+                    <div
+                      className="timeline-bar-fill"
+                      style={{
+                        height: `${Math.max((entry.count / timelineMax) * 100, entry.count > 0 ? 12 : 4)}%`,
+                      }}
+                    />
+                    <span>{entry.label}</span>
+                    <strong>{entry.count}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="stats-card">
+              <div className="stats-card-head">
+                <span>One cikan olaylar</span>
+              </div>
+              <div className="highlight-list">
+                {displayStats.highlights.map((earthquake) => (
+                  <div className="highlight-row" key={earthquake.id}>
+                    <span
+                      className="highlight-badge"
+                      style={{ backgroundColor: getMagnitudeColor(earthquake.magnitude) }}
+                    >
+                      M {earthquake.magnitude.toFixed(1)}
+                    </span>
+                    <div>
+                      <strong>{earthquake.place}</strong>
+                      <small>{formatShortTime(earthquake.timeMs)}</small>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
             <div className="legend">
@@ -398,6 +615,33 @@ function App() {
             <div className="chat-section-head">
               <h2>Deprem Asistani</h2>
               <span>AI</span>
+            </div>
+            {selectedEarthquake ? (
+              <div className="chat-context-card">
+                <span className="chat-context-label">Secili deprem</span>
+                <strong>{selectedEarthquake.place}</strong>
+                <div className="chat-context-meta">
+                  <span>M {selectedEarthquake.magnitude.toFixed(1)}</span>
+                  <span>{selectedEarthquake.depthKm.toFixed(1)} km</span>
+                  <span>{formatShortTime(selectedEarthquake.timeMs)}</span>
+                </div>
+              </div>
+            ) : null}
+            <div className="chat-prompt-row">
+              {[
+                'En yogun bolge neresi?',
+                'Son 1 saatte en buyuk deprem hangisi?',
+                'Secili deprem cevresinde hareketlilik var mi?',
+              ].map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="chat-prompt-chip"
+                  onClick={() => setChatInput(prompt)}
+                >
+                  {prompt}
+                </button>
+              ))}
             </div>
             <div className="chat-list">
               {messages.map((message) => (
@@ -426,7 +670,7 @@ function App() {
         <section className="map-panel">
           <EarthquakeMap
             earthquakes={filteredEarthquakes}
-            latestEarthquakeId={latestEarthquakeId}
+            latestEarthquakeId={pulsingEarthquakeId}
           />
         </section>
       </main>

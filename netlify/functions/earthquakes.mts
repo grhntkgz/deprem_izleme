@@ -1,16 +1,19 @@
 import type { Config } from '@netlify/functions'
 
-import { fetchEarthquakes, getAfadUrl } from './_lib/afad.mts'
+import { calculateEarthquakeStats, fetchEarthquakes, getAfadUrl } from './_lib/afad.mts'
 
 export default async () => {
   try {
     const earthquakes = await fetchEarthquakes()
+    const fetchedAtMs = Date.now()
+    const stats = calculateEarthquakeStats(earthquakes, fetchedAtMs)
 
     return Response.json({
       source: getAfadUrl(),
-      fetchedAtMs: Date.now(),
+      fetchedAtMs,
       total: earthquakes.length,
       earthquakes,
+      stats,
     })
   } catch (error) {
     console.error('AFAD verisi alinamadi:', error)
