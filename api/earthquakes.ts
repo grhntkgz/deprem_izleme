@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 
-import { calculateEarthquakeStats, fetchEarthquakes, getAfadUrl } from '../netlify/functions/_lib/afad.mts'
+import { calculateEarthquakeStats, fetchEarthquakes, getAfadUrl } from './_lib/afad'
 
 export default async function handler(_request: VercelRequest, response: VercelResponse) {
   try {

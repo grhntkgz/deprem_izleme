@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import OpenAI from 'openai'
 
-import { answerChat, calculateEarthquakeStats, fetchEarthquakes, getAfadUrl } from '../netlify/functions/_lib/afad.mts'
+import { answerChat, calculateEarthquakeStats, fetchEarthquakes, getAfadUrl } from './_lib/afad'
 
 type ChatRequestMessage = {
   role?: 'assistant' | 'user'
