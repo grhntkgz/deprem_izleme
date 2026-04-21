@@ -793,6 +793,7 @@
     overflow-x: auto;
     overflow-y: hidden;
     padding: 10px 12px 12px;
+    scroll-snap-type: x proximity;
   }
 
   .overview-panel::after {
@@ -835,22 +836,25 @@
   }
 
   .overview-top-grid,
-  .overview-bottom-grid {
+  .overview-bottom-grid,
+  .overview-main-stack,
+  .stats-hero-grid,
+  .insight-strip {
     display: grid;
     grid-auto-flow: column;
-    grid-auto-columns: minmax(240px, 78vw);
+    grid-auto-columns: minmax(210px, 68vw);
     gap: 10px;
   }
 
-  .stats-hero-grid {
-    grid-auto-flow: row;
-    grid-template-columns: 1fr;
+  .overview-top-grid,
+  .overview-bottom-grid {
+    width: max-content;
   }
 
+  .overview-main-stack,
+  .stats-hero-grid,
   .insight-strip {
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(220px, 72vw);
-    overflow-x: auto;
+    display: contents;
   }
 
   .window-grid {
@@ -859,7 +863,24 @@
 
   .stats-card,
   .stats-hero-card {
+    width: min(68vw, 260px);
     min-height: 100%;
+    scroll-snap-align: start;
+  }
+
+  .stats-card-windows {
+    grid-column: auto;
+    width: min(82vw, 320px);
+  }
+
+  .province-list,
+  .highlight-list {
+    max-height: 132px;
+    scrollbar-width: thin;
+  }
+
+  .timeline-bars {
+    min-height: 78px;
   }
 
   .chat-list {
