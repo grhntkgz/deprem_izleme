@@ -1,7 +1,7 @@
-import type { Config } from '@netlify/functions'
+import type { VercelRequest, VercelResponse } from '@vercel/node'
 import OpenAI from 'openai'
 
-import { answerChat, calculateEarthquakeStats, fetchEarthquakes, getAfadUrl } from './_lib/afad.mts'
+import { answerChat, calculateEarthquakeStats, fetchEarthquakes, getAfadUrl } from '../netlify/functions/_lib/afad.mts'
 
 type ChatRequestMessage = {
   role?: 'assistant' | 'user'
@@ -18,14 +18,7 @@ Mumkun oldugunda sonuca once kisa cevap, sonra 1-3 maddelik analitik destek ver.
 `
 
 function getAiAvailability() {
-  try {
-    const apiKey = Netlify.env.get('OPENAI_API_KEY')
-    const baseURL = Netlify.env.get('OPENAI_BASE_URL')
-
-    return Boolean(apiKey || baseURL)
-  } catch {
-    return false
-  }
+  return Boolean(process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL)
 }
 
 function buildContextSummary(
@@ -82,7 +75,10 @@ async function answerWithModel({
   selectedEarthquakeId?: string
   messages: ChatRequestMessage[]
 }) {
-  const openai = new OpenAI()
+  const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    baseURL: process.env.OPENAI_BASE_URL,
+  })
   const recentMessages = messages
     .filter(
       (item): item is { role: 'assistant' | 'user'; text: string } =>
@@ -96,7 +92,7 @@ async function answerWithModel({
       content: item.text.trim(),
     }))
 
-  const response = await openai.responses.create({
+  const modelResponse = await openai.responses.create({
     model: modelName,
     input: [
       {
@@ -115,12 +111,16 @@ async function answerWithModel({
     ],
   })
 
-  return response.output_text.trim()
+  return modelResponse.output_text.trim()
 }
 
-export default async (req: Request) => {
+export default async function handler(request: VercelRequest, response: VercelResponse) {
+  if (request.method !== 'POST') {
+    return response.status(405).json({ message: 'Sadece POST istekleri desteklenir.' })
+  }
+
   try {
-    const body = (await req.json()) as {
+    const body = request.body as {
       message?: string
       selectedEarthquakeId?: string
       messages?: ChatRequestMessage[]
@@ -128,7 +128,7 @@ export default async (req: Request) => {
     const message = typeof body.message === 'string' ? body.message.trim() : ''
 
     if (!message) {
-      return Response.json({ message: 'Soru bos olamaz.' }, { status: 400 })
+      return response.status(400).json({ message: 'Soru bos olamaz.' })
     }
 
     const earthquakes = await fetchEarthquakes()
@@ -156,7 +156,7 @@ export default async (req: Request) => {
       })
     }
 
-    return Response.json({
+    return response.status(200).json({
       answer,
       source: getAfadUrl(),
       fetchedAtMs: Date.now(),
@@ -164,15 +164,9 @@ export default async (req: Request) => {
     })
   } catch (error) {
     console.error('Chat cevabi olusturulamadi:', error)
-    return Response.json(
-      {
-        message: 'Deprem asistani su an cevap veremiyor. Lutfen tekrar deneyin.',
-      },
-      { status: 502 },
-    )
-  }
-}
 
-export const config: Config = {
-  path: '/api/chat',
+    return response.status(502).json({
+      message: 'Deprem asistani su an cevap veremiyor. Lutfen tekrar deneyin.',
+    })
+  }
 }
